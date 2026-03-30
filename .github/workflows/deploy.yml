@@ -1,0 +1,127 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build apps
+        run: pnpm build
+
+      - name: Configure AWS credentials
+        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Login to ECR
+        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' }}
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push backend image
+        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' && secrets.AWS_ACCOUNT_ID != '' && secrets.ECR_BACKEND_REPO != '' }}
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          ECR_BACKEND_REPO: ${{ secrets.ECR_BACKEND_REPO }}
+        run: |
+          docker build -f apps/backend/Dockerfile -t backend:latest .
+          docker tag backend:latest ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_BACKEND_REPO}:latest
+          docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_BACKEND_REPO}:latest
+
+      - name: Build and push frontend image
+        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' && secrets.AWS_ACCOUNT_ID != '' && secrets.ECR_FRONTEND_REPO != '' }}
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          ECR_FRONTEND_REPO: ${{ secrets.ECR_FRONTEND_REPO }}
+        run: |
+          docker build -f apps/frontend/Dockerfile -t frontend:latest .
+          docker tag frontend:latest ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_FRONTEND_REPO}:latest
+          docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_FRONTEND_REPO}:latest
+
+      - name: Render ECS task definitions
+        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' && secrets.AWS_ACCOUNT_ID != '' }}
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          ECR_BACKEND_REPO: ${{ secrets.ECR_BACKEND_REPO }}
+          ECR_FRONTEND_REPO: ${{ secrets.ECR_FRONTEND_REPO }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_JWT_SECRET: ${{ secrets.SUPABASE_JWT_SECRET }}
+          FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          API_URL: ${{ secrets.API_URL }}
+        run: |
+          python - <<'PY'
+          import json, os, re
+          def render(src, dest):
+              text = open(src, "r", encoding="utf-8").read()
+              for key in [
+                  "AWS_ACCOUNT_ID","AWS_REGION","ECR_BACKEND_REPO","ECR_FRONTEND_REPO",
+                  "SUPABASE_URL","SUPABASE_KEY","SUPABASE_JWT_SECRET","FRONTEND_URL",
+                  "SUPABASE_ANON_KEY","API_URL",
+              ]:
+                  text = text.replace(f"<{key}>", os.environ.get(key, ""))
+              open(dest, "w", encoding="utf-8").write(text)
+          render("infra/ecs-taskdef-backend.json", "infra/ecs-taskdef-backend.rendered.json")
+          render("infra/ecs-taskdef-frontend.json", "infra/ecs-taskdef-frontend.rendered.json")
+          PY
+
+      - name: Deploy backend to ECS
+        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' && secrets.ECS_CLUSTER != '' && secrets.ECS_BACKEND_SERVICE != '' }}
+        env:
+          ECS_CLUSTER: ${{ secrets.ECS_CLUSTER }}
+          ECS_BACKEND_SERVICE: ${{ secrets.ECS_BACKEND_SERVICE }}
+        run: |
+          aws ecs register-task-definition --cli-input-json file://infra/ecs-taskdef-backend.rendered.json
+          aws ecs update-service --cluster "${ECS_CLUSTER}" --service "${ECS_BACKEND_SERVICE}" --force-new-deployment
+
+      - name: Deploy frontend to ECS (optional)
+        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' && secrets.ECS_CLUSTER != '' && secrets.ECS_FRONTEND_SERVICE != '' }}
+        env:
+          ECS_CLUSTER: ${{ secrets.ECS_CLUSTER }}
+          ECS_FRONTEND_SERVICE: ${{ secrets.ECS_FRONTEND_SERVICE }}
+        run: |
+          aws ecs register-task-definition --cli-input-json file://infra/ecs-taskdef-frontend.rendered.json
+          aws ecs update-service --cluster "${ECS_CLUSTER}" --service "${ECS_FRONTEND_SERVICE}" --force-new-deployment
+
+      - name: Deploy frontend to Amplify (optional)
+        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' && secrets.AMPLIFY_APP_ID != '' }}
+        env:
+          AMPLIFY_APP_ID: ${{ secrets.AMPLIFY_APP_ID }}
+          AMPLIFY_BRANCH: ${{ secrets.AMPLIFY_BRANCH || 'main' }}
+        run: |
+          aws amplify start-job --app-id "${AMPLIFY_APP_ID}" --branch-name "${AMPLIFY_BRANCH}" --job-type RELEASE
+
+      - name: Mock AWS deployment
+        if: ${{ secrets.AWS_ACCESS_KEY_ID == '' || secrets.AWS_SECRET_ACCESS_KEY == '' }}
+        run: |
+          echo "Mock deployment: build artifacts ready."
+          echo "Add AWS secrets to enable real ECS/Amplify deployment."

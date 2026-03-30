@@ -1,0 +1,24 @@
+{
+  "family": "projectflow-backend",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::<AWS_ACCOUNT_ID>:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::<AWS_ACCOUNT_ID>:role/ecsTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "backend",
+      "image": "<AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/<ECR_BACKEND_REPO>:latest",
+      "portMappings": [{ "containerPort": 3000, "protocol": "tcp" }],
+      "essential": true,
+      "environment": [
+        { "name": "SUPABASE_URL", "value": "<SUPABASE_URL>" },
+        { "name": "SUPABASE_KEY", "value": "<SUPABASE_KEY>" },
+        { "name": "SUPABASE_JWT_SECRET", "value": "<SUPABASE_JWT_SECRET>" },
+        { "name": "FRONTEND_URL", "value": "<FRONTEND_URL>" },
+        { "name": "PORT", "value": "3000" }
+      ]
+    }
+  ]
+}
