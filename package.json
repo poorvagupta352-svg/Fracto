@@ -1,0 +1,12 @@
+{
+  "name": "mern-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --parallel --filter backend --filter frontend run dev",
+    "build": "pnpm --filter backend run build && pnpm --filter frontend run build",
+    "start": "pnpm --parallel --filter backend --filter frontend run start",
+    "test": "pnpm --filter backend run test && pnpm --filter frontend run test:e2e"
+  },
+  "packageManager": "pnpm@10.33.0"
+}
